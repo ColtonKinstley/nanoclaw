@@ -99,6 +99,8 @@ A second tier (direct source-level self-edits via a draft/activate flow) is plan
 
 API keys, OAuth tokens, and auth credentials are managed by the OneCLI gateway. Secrets are injected into per-agent containers at request time — none are passed in env vars or through chat context. `src/onecli-approvals.ts`, `ensureAgent()` in `container-runner.ts`. Run `onecli --help`.
 
+The gateway itself runs as a docker compose stack at `~/.onecli/docker-compose.yml` (postgres + onecli image bound to `127.0.0.1:10254`). Bring it up with `cd ~/.onecli && docker compose up -d`; health check `curl -fsS http://127.0.0.1:10254/api/health`. The CLI binary at `~/.local/bin/onecli` is just a client — it has no `start` subcommand.
+
 ### Gotcha: auto-created agents start in `selective` secret mode
 
 When the host first spawns a session for a new agent group, `container-runner.ts:385` calls `onecli.ensureAgent({ name, identifier })`. The OneCLI `POST /api/agents` endpoint creates the agent in **`selective`** secret mode — meaning **no secrets are assigned to it by default**, even if the secrets exist in the vault and have host patterns that would otherwise match.
@@ -175,12 +177,23 @@ cd container/agent-runner && bun test      # Container tests (bun:test)
 
 Container typecheck is a separate tsconfig — if you edit `container/agent-runner/src/`, run `pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit` from root (or `bun run typecheck` from `container/agent-runner/`).
 
+Hot-reload behavior:
+- **Host code (`src/`)** — production service runs `dist/`. After edits, run `pnpm run build` then `launchctl kickstart -k gui/$(id -u)/<label>`. For active development use `pnpm run dev` instead of the launchd service.
+- **Agent-runner code (`container/agent-runner/src/`)** — bind-mounted into containers at `/app/src`. Each new session spawn picks up the latest source — **no image rebuild needed**. Only rebuild the image when changing the Dockerfile, base deps, or installed CLIs.
+
+Env vars worth knowing:
+- `WEBHOOK_PORT` — webhook listener port (default 3000). Override if another local dev server already holds 3000.
+- `LOG_LEVEL` — `debug` exposes container stderr (see "Debugging container spawn failures").
+
 Service management:
+
+The actual launchd label includes an install-specific suffix (`com.nanoclaw-v2-<hash>`) — find it with `launchctl list | grep nanoclaw` or `ls ~/Library/LaunchAgents/`. Substitute it for `<label>` below.
+
 ```bash
 # macOS (launchd)
-launchctl load   ~/Library/LaunchAgents/com.nanoclaw.plist
-launchctl unload ~/Library/LaunchAgents/com.nanoclaw.plist
-launchctl kickstart -k gui/$(id -u)/com.nanoclaw  # restart
+launchctl load   ~/Library/LaunchAgents/<label>.plist
+launchctl unload ~/Library/LaunchAgents/<label>.plist
+launchctl kickstart -k gui/$(id -u)/<label>  # restart
 
 # Linux (systemd)
 systemctl --user start|stop|restart nanoclaw
@@ -215,6 +228,15 @@ This project uses pnpm with `minimumReleaseAge: 4320` (3 days) in `pnpm-workspac
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run `./container/build.sh`.
+
+## Debugging container spawn failures
+
+Container stderr is logged at `debug` level — set `LOG_LEVEL=debug` (env or plist) to see the actual docker error. At default `info`, container exits surface only as `code=N` with no message.
+
+Recurring causes:
+- **Stale `imageTag` in `groups/<folder>/container.json`** — points at a per-agent overlay tag (`<base>:<agentGroupId>`) that no longer exists locally; docker silently tries to pull and exits 127. Rebuild via `buildAgentGroupImage`'s recipe (`FROM <base>` + apt/pnpm-install layer) and re-tag, or clear `imageTag` to fall back to base.
+- **`docker-credential-osxkeychain` missing** — Docker Desktop → OrbStack migrations leave `~/.docker/config.json` with `credsStore: osxkeychain` pointing at a deleted binary; any pull fails. Remove the `credsStore` key.
+- **`spawn docker ENOENT`** from the host process — macOS launchd does not include `/opt/homebrew/bin` in the default `PATH`. Apple Silicon installs must inject it into the nanoclaw plist's `EnvironmentVariables.PATH`.
 
 ## Container Runtime (Bun)
 
