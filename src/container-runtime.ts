@@ -82,10 +82,7 @@ function probeRuntime(): boolean {
 }
 
 function appInstalled(name: string): boolean {
-  return (
-    fs.existsSync(`/Applications/${name}.app`) ||
-    fs.existsSync(`${os.homedir()}/Applications/${name}.app`)
-  );
+  return fs.existsSync(`/Applications/${name}.app`) || fs.existsSync(`${os.homedir()}/Applications/${name}.app`);
 }
 
 function waitForRuntime(timeoutMs: number): boolean {
