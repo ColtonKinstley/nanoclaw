@@ -17,6 +17,14 @@ vi.mock('child_process', () => ({
   execSync: (...args: unknown[]) => mockExecSync(...args),
 }));
 
+// Mock os.platform so the auto-launch path in ensureContainerRuntimeRunning
+// (which only fires on darwin) is bypassed in tests by default.
+const mockPlatform = vi.fn(() => 'linux');
+vi.mock('os', async () => {
+  const actual = await vi.importActual<typeof import('os')>('os');
+  return { default: { ...actual, platform: () => mockPlatform() } };
+});
+
 import {
   CONTAINER_RUNTIME_BIN,
   readonlyMountArgs,

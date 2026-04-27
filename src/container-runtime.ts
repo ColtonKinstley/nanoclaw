@@ -3,6 +3,7 @@
  * All runtime-specific logic lives here so swapping runtimes means changing one file.
  */
 import { execSync } from 'child_process';
+import fs from 'fs';
 import os from 'os';
 
 import { log } from './log.js';
@@ -34,26 +35,66 @@ export function stopContainer(name: string): void {
 
 /** Ensure the container runtime is running, starting it if needed. */
 export function ensureContainerRuntimeRunning(): void {
-  try {
-    execSync(`${CONTAINER_RUNTIME_BIN} info`, {
-      stdio: 'pipe',
-      timeout: 10000,
-    });
+  if (probeRuntime()) {
     log.debug('Container runtime already running');
-  } catch (err) {
-    log.error('Failed to reach container runtime', { err });
-    console.error('\n╔════════════════════════════════════════════════════════════════╗');
-    console.error('║  FATAL: Container runtime failed to start                      ║');
-    console.error('║                                                                ║');
-    console.error('║  Agents cannot run without a container runtime. To fix:        ║');
-    console.error('║  1. Ensure Docker is installed and running                     ║');
-    console.error('║  2. Run: docker info                                           ║');
-    console.error('║  3. Restart NanoClaw                                           ║');
-    console.error('╚════════════════════════════════════════════════════════════════╝\n');
-    throw new Error('Container runtime is required but failed to start', {
-      cause: err,
-    });
+    return;
   }
+
+  // Try to auto-start a known runtime app on macOS. Order: OrbStack first
+  // (lighter, faster bind mounts), then Docker Desktop. On Linux the daemon
+  // is managed by systemd / init — skip the GUI dance and fall through to
+  // the fatal banner.
+  if (os.platform() === 'darwin') {
+    for (const app of ['OrbStack', 'Docker']) {
+      if (!appInstalled(app)) continue;
+      log.info(`Container runtime not running — launching ${app}`);
+      try {
+        execSync(`open -a ${app}`, { stdio: 'pipe' });
+      } catch {
+        continue;
+      }
+      if (waitForRuntime(60_000)) {
+        log.info(`${app} ready`);
+        return;
+      }
+    }
+  }
+
+  log.error('Container runtime did not become ready');
+  console.error('\n╔════════════════════════════════════════════════════════════════╗');
+  console.error('║  FATAL: Container runtime failed to start                      ║');
+  console.error('║                                                                ║');
+  console.error('║  Agents cannot run without a container runtime. To fix:        ║');
+  console.error('║  1. Ensure OrbStack or Docker Desktop is installed             ║');
+  console.error('║  2. Run: docker info                                           ║');
+  console.error('║  3. Restart NanoClaw                                           ║');
+  console.error('╚════════════════════════════════════════════════════════════════╝\n');
+  throw new Error('Container runtime is required but failed to start');
+}
+
+function probeRuntime(): boolean {
+  try {
+    execSync(`${CONTAINER_RUNTIME_BIN} info`, { stdio: 'pipe', timeout: 10_000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function appInstalled(name: string): boolean {
+  return (
+    fs.existsSync(`/Applications/${name}.app`) ||
+    fs.existsSync(`${os.homedir()}/Applications/${name}.app`)
+  );
+}
+
+function waitForRuntime(timeoutMs: number): boolean {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (probeRuntime()) return true;
+    execSync('sleep 2');
+  }
+  return false;
 }
 
 /** Kill orphaned NanoClaw containers from previous runs. */
