@@ -99,7 +99,7 @@ async function sendPairingConfirmation(token: string, platformId: string): Promi
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         chat_id: chatId,
-        text: "Pairing success! I'm spinning up the agent now, you'll get a message from them shortly.",
+        text: 'Pairing success! Head back to the NanoClaw installer to finish setup.',
       }),
     });
     if (!res.ok) {
@@ -210,12 +210,28 @@ registerChannelAdapter('telegram', {
       extractReplyContext,
       supportsThreads: false,
       transformOutboundText: sanitizeTelegramLegacyMarkdown,
+      maxTextLength: 4000,
     });
 
     const botUsernamePromise = fetchBotUsername(token);
 
     const wrapped: ChannelAdapter = {
       ...bridge,
+      resolveChannelName: async (platformId: string) => {
+        const chatId = platformId.split(':').slice(1).join(':');
+        if (!chatId) return null;
+        try {
+          const res = await fetch(`https://api.telegram.org/bot${token}/getChat`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ chat_id: chatId }),
+          });
+          const data = (await res.json()) as { ok?: boolean; result?: { title?: string } };
+          return data.ok ? (data.result?.title ?? null) : null;
+        } catch {
+          return null;
+        }
+      },
       async setup(hostConfig: ChannelSetup) {
         const intercepted: ChannelSetup = {
           ...hostConfig,
